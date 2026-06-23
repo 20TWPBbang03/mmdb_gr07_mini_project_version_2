@@ -1,5 +1,5 @@
 <?php
-//test
+
 // 1. Include the dynamic sidebar menu at the very top
 include('menu.php'); 
 ?>
