@@ -15,7 +15,7 @@ include('menu.php');
 
                 <div>
                     <h2 class="text-2xl font-bold text-white">
-                        Dashboard
+                        Dashboard Group GR07
                     </h2>
 
                     <p class="text-cyan-200 text-sm mt-1">

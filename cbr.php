@@ -264,6 +264,93 @@ if ($conn_mmdb) {
 
     </div>
 
+    <div class="mt-8 bg-white backdrop-blur-lg border border-white/50 rounded-3xl p-6 shadow-xl shadow-slate-200">
+        <div class="flex items-center justify-between mb-5">
+            <h3 class="text-xs uppercase tracking-widest text-blue-600 font-semibold">
+                Students Facial Analysis Log History
+            </h3>
+            <span class="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded-full font-medium">Database Connected</span>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse text-sm">
+                <thead>
+                    <tr class="border-b border-slate-100 text-slate-400 text-xs uppercase tracking-wider bg-slate-50/50">
+                        <th class="py-3 px-4 font-semibold">Matric Number</th>
+                        <th class="py-3 px-4 font-semibold">Student Name</th>
+                        <th class="py-3 px-4 font-semibold">Group No</th>
+                        <th class="py-3 px-4 font-semibold text-center">Profile Image</th>
+                        <th class="py-3 px-4 font-semibold">Expression Result</th>
+                        <th class="py-3 px-4 font-semibold">Confidence</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-50 text-slate-700">
+                    <?php
+                    if ($conn) {
+                        // Gather analytical logs stored inside target logging tables
+                        $history_query = "SELECT s.student_matric_no, s.student_name, s.profile_image_path, 
+                                                 f.cbr_expression_result, f.expression_confidence 
+                                          FROM facial_expression_analysis f 
+                                          JOIN student s ON f.student_matric_no = s.student_matric_no 
+                                          ORDER BY f.analysis_id DESC";
+                        
+                        $history_result = mysqli_query($conn, $history_query);
+                        
+                        if ($history_result && mysqli_num_rows($history_result) > 0) {
+                            while ($row = mysqli_fetch_assoc($history_result)) {
+                                $history_matric = $row['student_matric_no'];
+                                $group_display = "N/A";
+
+                                // Cross-reference matching group number dynamically from remote vstu view
+                                if ($conn_mmdb) {
+                                    $grp_query = "SELECT group_no FROM vstu WHERE matric_no = '" . mysqli_real_escape_string($conn_mmdb, $history_matric) . "'";
+                                    $grp_res = mysqli_query($conn_mmdb, $grp_query);
+                                    if ($grp_res && mysqli_num_rows($grp_res) > 0) {
+                                        $grp_row = mysqli_fetch_assoc($grp_res);
+                                        $group_display = htmlspecialchars($grp_row['group_no']);
+                                    }
+                                }
+
+                                // Setup custom styling colors based on detection values
+                                $badge_class = "bg-slate-100 text-slate-600";
+                                if (strtoupper($row['cbr_expression_result']) === "HAPPY") {
+                                    $badge_class = "bg-amber-100 text-amber-700 font-semibold";
+                                } elseif (in_array(strtoupper($row['cbr_expression_result']), ["SAD", "ANGRY"])) {
+                                    $badge_class = "bg-indigo-100 text-indigo-700 font-semibold";
+                                }
+                                ?>
+                                <tr class="hover:bg-slate-50/50 transition-colors duration-200">
+                                    <td class="py-3 px-4 font-medium text-slate-900"><?php echo htmlspecialchars($row['student_matric_no']); ?></td>
+                                    <td class="py-3 px-4"><?php echo htmlspecialchars($row['student_name']); ?></td>
+                                    <td class="py-3 px-4"><span class="bg-slate-100 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-600"><?php echo $group_display; ?></span></td>
+                                    <td class="py-3 px-4 text-center">
+                                        <?php if (!empty($row['profile_image_path'])): ?>
+                                            <img src="<?php echo htmlspecialchars($row['profile_image_path']); ?>" class="w-10 h-10 object-cover rounded-full inline-block border border-slate-200 shadow-sm" alt="Thumbnail">
+                                        <?php else: ?>
+                                            <i class="fas fa-user-circle text-2xl text-slate-300"></i>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="py-3 px-4">
+                                        <span class="px-2.5 py-1 rounded-full text-xs uppercase tracking-wide <?php echo $badge_class; ?>">
+                                            <?php echo htmlspecialchars($row['cbr_expression_result']); ?>
+                                        </span>
+                                    </td>
+                                    <td class="py-3 px-4 font-mono font-bold text-blue-600"><?php echo number_format($row['expression_confidence'] * 100, 0); ?>%</td>
+                                </tr>
+                                <?php
+                            }
+                        } else {
+                            echo '<tr><td colspan="6" class="py-8 text-center text-slate-400 italic">No cbr metrics history records available in log data.</td></tr>';
+                        }
+                    } else {
+                        echo '<tr><td colspan="6" class="py-8 text-center text-red-400 italic">Failed to securely query transactional historical records layers.</td></tr>';
+                    }
+                    ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
 </main>
 
 <script>
@@ -351,6 +438,8 @@ document.addEventListener("DOMContentLoaded", async () => {
             .then(data => {
                 if(data.status === 'success') {
                     apiStatus.innerText = "Analysis completed and records synced!";
+                    // Reload the window after a short delay so the updated row instantly appears in the table
+                    setTimeout(() => { window.location.reload(); }, 1200);
                 } else {
                     console.error("Database sync failed:", data.message);
                     apiStatus.innerText = "Analysis finished (Data log sync failed).";
