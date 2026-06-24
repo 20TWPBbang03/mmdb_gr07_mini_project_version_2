@@ -181,7 +181,7 @@ include 'menu.php';
                     </p>
                 </div>
                 <div class="text-cyan-300 text-4xl">
-                    <i class="fas fa-file-circle-check"></i>
+                    <i class="fas fa-database w-6"></i>
                 </div>
             </div>
         </div>
