@@ -24,11 +24,12 @@ if (isset($_GET['action']) && $_GET['action'] === 'save_analysis') {
         $confidence = floatval($input['expression_confidence']);
 
         // Fetch absolute structural metrics from vstu view container to execute sync updates
-        $vstu_query = "SELECT full_name, phone_no, life_motto, photoStu FROM vstu WHERE matric_no = '$matric'";
+        $vstu_query = "SELECT id, full_name, phone_no, life_motto, photoStu FROM vstu WHERE matric_no = '$matric'";
         $vstu_res = mysqli_query($conn_mmdb, $vstu_query);
         
         if ($vstu_res && mysqli_num_rows($vstu_res) > 0) {
             $vstu_row = mysqli_fetch_assoc($vstu_res);
+            $student_id = intval($vstu_row['id']);
             $full_name = mysqli_real_escape_string($conn, $vstu_row['full_name']);
             $phone_no = mysqli_real_escape_string($conn, $vstu_row['phone_no']);
             $life_motto = mysqli_real_escape_string($conn, $vstu_row['life_motto']);
@@ -56,8 +57,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'save_analysis') {
 
             // Log parameters down to structural database layout table metrics history
             $insert_analysis = "INSERT INTO facial_expression_analysis 
-                (student_matric_no, eye_position, mouth_position, eyebrow_position, facial_landmarks, cbr_expression_result, expression_confidence) 
-                VALUES ('$matric', '$eye', '$mouth', '$eyebrow', '$landmarks', '$result_expr', $confidence)";
+                (student_id, student_matric_no, eye_position, mouth_position, eyebrow_position, facial_landmarks, cbr_expression_result, expression_confidence) 
+                VALUES ($student_id, '$matric', '$eye', '$mouth', '$eyebrow', '$landmarks', '$result_expr', $confidence)";
             
             if (mysqli_query($conn, $insert_analysis)) {
                 echo json_encode(['status' => 'success', 'message' => 'Student synchronized and history logged.']);
@@ -148,11 +149,11 @@ if ($conn_mmdb) {
 
             <form method="POST" action="">
                 <label class="block text-xs text-slate-500 mb-2">
-                    Student Profile
+                    Student Profile (Enter Matric Number)
                 </label>
 
-                <select id="student_matric_select" name="student_matric" required class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-300">
-                    <option value="">Select Student</option>
+                <input type="text" id="student_matric_input" name="student_matric" value="<?php echo htmlspecialchars($selected_matric); ?>" required autocomplete="off" list="student_list" placeholder="Type Matric Number..." class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-300">
+                <datalist id="student_list">
                     <?php
                     if ($students_result && mysqli_num_rows($students_result) > 0) {
                         while ($st = mysqli_fetch_assoc($students_result)) {
@@ -163,12 +164,11 @@ if ($conn_mmdb) {
                                 $m_no = $st['student_matric_no'];
                                 $label = htmlspecialchars($st['student_matric_no']) . " - " . htmlspecialchars($st['student_name']);
                             }
-                            $selected = ($m_no == $selected_matric) ? 'selected' : '';
-                            echo "<option value='" . htmlspecialchars($m_no) . "' $selected>$label</option>";
+                            echo "<option value='" . htmlspecialchars($m_no) . "'>$label</option>";
                         }
                     }
                     ?>
-                </select>
+                </datalist>
 
                 <div class="mt-4">
                     <label class="block text-xs text-slate-500 mb-2">
