@@ -1,11 +1,17 @@
 <?php
+// Set maximum/unlimited execution and file upload limits at runtime
+@ini_set('upload_max_filesize', '0'); // 0 sets it to unlimited in modern PHP, or use a high value like '4096M'
+@ini_set('post_max_size', '0');       // 0 sets it to unlimited, or use a high value like '4096M'
+@ini_set('memory_limit', '-1');       // -1 removes memory restrictions for processing large multimedia assets
+@ini_set('max_execution_time', '0');  // 0 removes time-out limits for long uploads
+@ini_set('max_input_time', '0');      // 0 removes time-out limits for parsing data
+
 include 'menu.php';
 // Include database connections ($conn for gr07, $conn_mmdb for mmdb2026)
 include 'db_conn.php';
 
 // Initialize variables
 $themes = [];
-$authenticated_student = null;
 $selected_submission = null;
 $text_content = '';
 $classification = 'Keyword-Based';
@@ -13,164 +19,188 @@ $words_analysed = 0;
 $themes_found = 0;
 $success_msg = '';
 
-// Fetch all students for the authentication datalist if connection exists
-$students_list = [];
-if ($conn_mmdb) {
-    $stu_query = "SELECT id, matric_no, full_name, phone_no, group_no FROM vstu";
-    $stu_result = mysqli_query($conn_mmdb, $stu_query);
-    if ($stu_result) {
-        while ($row = mysqli_fetch_assoc($stu_result)) {
-            $students_list[] = $row;
-        }
-    }
+// New initialized inputs for file handling
+$input_file_name = '';
+$uploaded_file_path = '';
+$uploaded_file_type = '';
+$highlighted_text = '';
+
+// Setup active student details dynamically from the logged-in session context
+$authenticated_student = [
+    'matric_no' => $_SESSION['student_matric_no'] ?? '',
+    'full_name' => $_SESSION['full_name'] ?? '',
+    'group_no'  => $_SESSION['group_no'] ?? ''
+];
+
+// Handle Reset Action (Placed up top so it clears inputs immediately before rendering)
+if (isset($_POST['reset_content'])) {
+    $themes = [];
+    $text_content = '';
+    $classification = 'Keyword-Based';
+    $words_analysed = 0;
+    $input_file_name = '';
+    $uploaded_file_path = '';
+    $uploaded_file_type = '';
+    $highlighted_text = '';
 }
 
-// Handle Student Authentication
-if (isset($_POST['proceed_auth'])) {
-    $search_input = trim($_POST['auth_search'] ?? '');
-    $phone_input = trim($_POST['auth_phone'] ?? '');
-
-    if (!empty($search_input) && !empty($phone_input)) {
-        foreach ($students_list as $stu) {
-            if (($stu['matric_no'] === $search_input || $stu['full_name'] === $search_input) && $stu['phone_no'] === $phone_input) {
-                $authenticated_student = $stu;
-                break;
-            }
-        }
-    }
-}
-
-// Persist authenticated student session via hidden inputs if already authenticated
-if (isset($_POST['auth_id_hidden']) && empty($authenticated_student)) {
-    foreach ($students_list as $stu) {
-        if ($stu['id'] == $_POST['auth_id_hidden']) {
-            $authenticated_student = $stu;
-            break;
-        }
-    }
-}
-
-// Fetch available file paths for the authenticated student from gr07 submission table
-$available_submissions = [];
-if ($authenticated_student && $conn) {
-    $sub_query = "SELECT submission_id, file_path, file_validation FROM submission WHERE student_id = " . intval($authenticated_student['id']);
-    // Fallback: if student_id is null in database entries, match via matric number
-    $sub_result = mysqli_query($conn, $sub_query);
-    if ($sub_result && mysqli_num_rows($sub_result) > 0) {
-        while ($row = mysqli_fetch_assoc($sub_result)) {
-            $available_submissions[] = $row;
-        }
-    } else {
-        // Fallback check matching matric number
-        $sub_query_alt = "SELECT submission_id, file_path, file_validation FROM submission WHERE student_matric_no = '" . mysqli_real_escape_string($conn, $authenticated_student['matric_no']) . "'";
-        $sub_result_alt = mysqli_query($conn, $sub_query_alt);
-        if ($sub_result_alt) {
-            while ($row = mysqli_fetch_assoc($sub_result_alt)) {
-                $available_submissions[] = $row;
-            }
-        }
-    }
-}
-
-// Handle Theme Analysis
-if (isset($_POST['analyze']) && $authenticated_student) {
+// Handle Theme Analysis Execution
+if (isset($_POST['analyze']) && !empty($authenticated_student['matric_no'])) {
     $text_content = $_POST['content'] ?? '';
-    $selected_sub_id = $_POST['submission_id'] ?? '';
+    $input_file_name = trim($_POST['file_name'] ?? '');
     
-    foreach ($available_submissions as $sub) {
-        if ($sub['submission_id'] == $selected_sub_id) {
-            $selected_submission = $sub;
-            break;
+    // Server-side word limitation safeguard matching the 500-word constraint
+    $word_count_check = str_word_count($text_content);
+    if ($word_count_check > 500) {
+        // Truncate to maximum of 500 words safely if passed manually
+        $words_array = preg_split('/\s+/', $text_content, 501);
+        array_pop($words_array);
+        $text_content = implode(' ', $words_array);
+    }
+
+    // Process file upload
+    if (isset($_FILES['upload_file']) && $_FILES['upload_file']['error'] == 0) {
+        $target_dir = "uploads/tbr/";
+        if (!is_dir($target_dir)) {
+            mkdir($target_dir, 0777, true);
+        }
+        
+        $original_filename = basename($_FILES["upload_file"]["name"]);
+        $ext = strtolower(pathinfo($original_filename, PATHINFO_EXTENSION));
+        // Sanitize and create uniquely traceable target path
+        $new_filename = "tbr_" . $authenticated_student['matric_no'] . "_" . time() . "." . $ext;
+        $target_file_path = $target_dir . $new_filename;
+        
+        // Fixed: Use native standard tmp_name reliably across PHP server deployments
+        if (move_uploaded_file($_FILES["upload_file"]["tmp_name"], $target_file_path)) {
+            $uploaded_file_path = $target_file_path;
+            $uploaded_file_type = strtoupper($ext);
         }
     }
 
-    if (!empty($text_content) && $selected_submission) {
-        $text = strtolower($text_content);
+    if (!empty($text_content) && !empty($input_file_name) && !empty($uploaded_file_path)) {
+        // --- START OF API THEME DETECTION INTEGRATION ---
+        // Official Google Gemini API Endpoint Configuration using your working credential format
+        $api_key = 'AQ.Ab8RN6Ltlm0ktYtjm66HasYzA_dIpnQCYC8iXbD2JQR4K3bMnA';
+        $api_url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=' . $api_key;
 
-        // Motivational
-        if (str_contains($text, "trying") || str_contains($text, "effort") || str_contains($text, "hard work") || str_contains($text, "determination") || str_contains($text, "never give up")) {
-            $themes[] = "Motivational";
-        }
-        // Inspirational
-        if (str_contains($text, "hope") || str_contains($text, "dream") || str_contains($text, "future") || str_contains($text, "inspire")) {
-            $themes[] = "Inspirational";
-        }
-        // Positive Mindset
-        if (str_contains($text, "positive") || str_contains($text, "success") || str_contains($text, "believe") || str_contains($text, "confidence")) {
-            $themes[] = "Positive Mindset";
-        }
-        // Educational
-        if (str_contains($text, "study") || str_contains($text, "education") || str_contains($text, "learning") || str_contains($text, "research")) {
-            $themes[] = "Educational";
-        }
-        // Technology
-        if (str_contains($text, "technology") || str_contains($text, "software") || str_contains($text, "computer") || str_contains($text, "database") || str_contains($text, "ai")) {
-            $themes[] = "Technology";
-        }
-        // Business
-        if (str_contains($text, "business") || str_contains($text, "marketing") || str_contains($text, "sales") || str_contains($text, "customer")) {
-            $themes[] = "Business";
-        }
-        // Creative
-        if (str_contains($text, "poem") || str_contains($text, "song") || str_contains($text, "music") || str_contains($text, "story")) {
-            $themes[] = "Creative";
-        }
-        // Emotional
-        if (str_contains($text, "love") || str_contains($text, "happy") || str_contains($text, "sad") || str_contains($text, "emotion")) {
-            $themes[] = "Emotional";
-        }
-        // Adventure
-        if (str_contains($text, "travel") || str_contains($text, "journey") || str_contains($text, "hiking") || str_contains($text, "explore")) {
-            $themes[] = "Adventure";
-        }
-        // Environment
-        if (str_contains($text, "nature") || str_contains($text, "forest") || str_contains($text, "ocean") || str_contains($text, "climate")) {
-            $themes[] = "Environment";
+        // Determine the precise MIME type to supply Google Gemini context
+        $mime_type = $_FILES['upload_file']['type'] ?: 'application/octet-stream';
+        
+        // Read file contents and encode to base64 for inline payload transmission
+        $file_data_base64 = base64_encode(file_get_contents($uploaded_file_path));
+
+        // Create a precise instructional prompt forcing Gemini to return structured application/json data
+        $prompt_instructions = "You are an automated Text-Based Retrieval theme classification module.
+        Analyze the accompanying text content along with the uploaded file asset (which could be an image, text, audio, or video stream).
+        Identify the overarching classification theme (e.g., 'Spatial Analysis', 'Database Security', 'Web Development', or 'General Content') and return a list of terms inside the text content that directly relate to or triggered that theme.
+        
+        Input Text Content: \"" . $text_content . "\"
+        
+        You MUST respond strictly in valid JSON format matching this schema without markdown decorators:
+        {
+            \"theme\": \"Detected Theme Label Here\",
+            \"detected_keywords\": [\"keyword1\", \"keyword2\", \"keyword3\"]
+        }";
+
+        // Assemble the payload components matching the strict structured hierarchy of Gemini API
+        $payload = [
+            'contents' => [
+                'parts' => [
+                    [
+                        'inlineData' => [
+                            'mimeType' => $mime_type,
+                            'data' => $file_data_base64
+                        ]
+                    ],
+                    [
+                        'text' => $prompt_instructions
+                    ]
+                ]
+            ],
+            'generationConfig' => [
+                'responseMimeType' => 'application/json'
+            ]
+        ];
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $api_url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json'
+        ]);
+
+        $response = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($http_code === 200 && $response) {
+            $response_data = json_decode($response, true);
+            
+            // Step into the Gemini text extraction sequence to locate our returned JSON string
+            $raw_json_output = $response_data['candidates'][0]['content']['parts'][0]['text'] ?? '';
+            $result_data = json_decode(trim($raw_json_output), true);
+            
+            $classification = $result_data['theme'] ?? 'General Content';
+            $matched_keywords = $result_data['detected_keywords'] ?? [];
+        } else {
+            // Fallback categorization layer if communication with the web API service encounters an error
+            $classification = 'General Content';
+            $matched_keywords = [];
         }
 
-        if (empty($themes)) {
-            $themes[] = "General Content";
+        // Dynamically build the regex string pattern tracking keywords to safely inject text highlights
+        if (!empty($matched_keywords)) {
+            $quoted_keywords = array_map('preg_quote', $matched_keywords);
+            $regex_pattern = '/\b(' . implode('|', $quoted_keywords) . ')\b/i';
+            
+            // Count the total number of highlighted words displayed inside the theme output view
+            preg_match_all($regex_pattern, $text_content, $matches);
+            $words_analysed = count($matches[0]);
+            
+            $highlighted_text = preg_replace_callback($regex_pattern, function($matches) {
+                return '<span class="bg-yellow-200 text-yellow-950 px-1 rounded font-semibold">' . $matches[0] . '</span>';
+            }, $text_content);
+        } else {
+            $highlighted_text = $text_content;
+            $words_analysed = 0;
         }
-
-        $words_analysed = str_word_count($text_content);
-        $themes_found = count($themes);
-        $classification = implode(', ', $themes);
+        // --- END OF API THEME DETECTION INTEGRATION ---
     }
 }
 
-// Handle Save Content Action
+// Handle Save Content Action Integration
 if (isset($_POST['save_content']) && $conn) {
-    $sub_id = intval($_POST['save_submission_id'] ?? 0);
-    $filepath = $_POST['save_file_path'] ?? '';
-    $filetype = $_POST['save_file_type'] ?? '';
-    $extracted = $_POST['save_extracted_text'] ?? '';
-    $theme_cat = $_POST['save_classification'] ?? '';
+    $f_name = trim($_POST['save_file_name'] ?? '');
+    $filepath = trim($_POST['save_file_path'] ?? '');
+    $filetype = trim($_POST['save_file_type'] ?? '');
+    $extracted = trim($_POST['save_extracted_text'] ?? '');
+    $theme_cat = trim($_POST['save_classification'] ?? '');
     $w_analyse = intval($_POST['save_words_analysed'] ?? 0);
-    $t_found = intval($_POST['save_themes_found'] ?? 0);
+    $matric_no = $authenticated_student['matric_no'];
 
-    if ($sub_id > 0) {
-        $insert_query = "INSERT INTO multimedia_content (submission_id, content_file_path, content_file_type, extracted_text, tbr_theme_category, word_analyse, theme_found) 
+    // Enforce rigorous server-side non-blank structure assertion rules prior to committing
+    if (!empty($f_name) && !empty($filepath) && !empty($filetype) && !empty($extracted) && !empty($theme_cat) && !empty($matric_no)) {
+        
+        // Note: Modified column insertion structure precisely targeting structural requests
+        $insert_query = "INSERT INTO multimedia_content (content_file_name, content_file_type, content_file_path, extracted_text, tbr_theme_category, word_analyse, student_matric_no) 
                          VALUES (?, ?, ?, ?, ?, ?, ?)";
+        
         $stmt = mysqli_prepare($conn, $insert_query);
         if ($stmt) {
-            mysqli_stmt_bind_param($stmt, "issssii", $sub_id, $filepath, $filetype, $extracted, $theme_cat, $w_analyse, $t_found);
+            mysqli_stmt_bind_param($stmt, "sssssis", $f_name, $filetype, $filepath, $extracted, $theme_cat, $w_analyse, $matric_no);
             if (mysqli_stmt_execute($stmt)) {
                 $success_msg = "Analysis details saved successfully!";
+                
+                // Clear state vector outputs dynamically following data save actions
+                $themes = []; $text_content = ''; $classification = 'Keyword-Based'; $words_analysed = 0;
+                $input_file_name = ''; $uploaded_file_path = ''; $uploaded_file_type = ''; $highlighted_text = '';
             }
             mysqli_stmt_close($stmt);
         }
     }
-}
-
-// Handle Reset Action
-if (isset($_POST['reset_content'])) {
-    $themes = [];
-    $authenticated_student = null;
-    $selected_submission = null;
-    $text_content = '';
-    $classification = 'Keyword-Based';
-    $words_analysed = 0;
-    $themes_found = 0;
 }
 ?>
 
@@ -195,35 +225,17 @@ if (isset($_POST['reset_content'])) {
     </div>
 
     <div class="mb-8 bg-white rounded-3xl p-6 shadow-xl">
-        <h3 class="text-xs uppercase tracking-widest text-blue-600 font-semibold mb-5">
-            Student Authentication
+        <h3 class="text-xs uppercase tracking-widest text-blue-600 font-semibold mb-3">
+            Active Student Profile Context
         </h3>
-        <form method="post" class="grid grid-cols-1 md:grid-cols-3 gap-5 items-end">
+        <div class="p-4 bg-blue-50/70 border border-blue-100 text-slate-800 rounded-xl text-sm font-medium flex items-center justify-between">
             <div>
-                <label class="block text-xs text-slate-500 mb-2">Matric No or Full Name</label>
-                <input type="text" name="auth_search" list="students_data" class="w-full border border-slate-200 rounded-xl p-3 text-sm" placeholder="Type name or matric number..." value="<?php echo htmlspecialchars($_POST['auth_search'] ?? ($authenticated_student ? $authenticated_student['full_name'] : '')); ?>" required>
-                <datalist id="students_data">
-                    <?php foreach ($students_list as $stu): ?>
-                        <option value="<?php echo htmlspecialchars($stu['matric_no']); ?>"><?php echo htmlspecialchars($stu['full_name'] . " (" . $stu['matric_no'] . ") " . $stu['group_no']); ?></option>
-                        <option value="<?php echo htmlspecialchars($stu['full_name']); ?>"><?php echo htmlspecialchars($stu['full_name'] . " (" . $stu['matric_no'] . ") " . $stu['group_no']); ?></option>
-                    <?php endforeach; ?>
-                </datalist>
+                Student: <strong><?php echo htmlspecialchars($authenticated_student['full_name']); ?></strong> (<?php echo htmlspecialchars($authenticated_student['matric_no']); ?>)
             </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-2">Phone Number</label>
-                <input type="text" name="auth_phone" class="w-full border border-slate-200 rounded-xl p-3 text-sm" placeholder="Enter phone number..." value="<?php echo htmlspecialchars($_POST['auth_phone'] ?? ($authenticated_student ? $authenticated_student['phone_no'] : '')); ?>" required>
-            </div>
-            <div>
-                <button type="submit" name="proceed_auth" class="w-full bg-gradient-to-r from-slate-900 to-blue-900 text-white px-5 py-3 rounded-xl hover:opacity-90 transition">
-                    Proceed Theme Analysis
-                </button>
-            </div>
-        </form>
-        <?php if ($authenticated_student): ?>
-            <div class="mt-4 p-3 bg-green-50 text-green-800 rounded-xl text-xs font-medium">
-                ✓ Authenticated successfully: <strong><?php echo htmlspecialchars($authenticated_student['full_name']); ?></strong> (<?php echo htmlspecialchars($authenticated_student['matric_no']); ?>) - Group <?php echo htmlspecialchars($authenticated_student['group_no']); ?>
-            </div>
-        <?php endif; ?>
+            <span class="bg-slate-800 text-cyan-400 font-bold px-3 py-1 rounded-lg uppercase tracking-wide text-xs">
+                Group <?php echo htmlspecialchars($authenticated_student['group_no']); ?>
+            </span>
+        </div>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -233,30 +245,18 @@ if (isset($_POST['reset_content'])) {
                 Content Retrieval
             </h3>
 
-            <form method="post">
-                <input type="hidden" name="auth_id_hidden" value="<?php echo $authenticated_student ? htmlspecialchars($authenticated_student['id']) : ''; ?>">
+            <form method="post" enctype="multipart/form-data">
+                <label class="block text-xs text-slate-500 mb-2">File Name</label>
+                <input type="text" name="file_name" value="<?php echo htmlspecialchars($input_file_name ? $input_file_name : ($_POST['file_name'] ?? '')); ?>" class="w-full border border-slate-200 rounded-xl p-3 text-sm mb-4" placeholder="Enter target descriptor file name" required>
 
-                <label class="block text-xs text-slate-500 mb-2">Select Submission File Path</label>
-                <select name="submission_id" class="w-full border border-slate-200 rounded-xl p-3 text-sm mb-4" required>
-                    <option value="">-- Choose File Path --</option>
-                    <?php if ($authenticated_student): ?>
-                        <?php foreach ($available_submissions as $sub): ?>
-                            <?php 
-                                $display_path = !empty($sub['file_path']) ? $sub['file_path'] : "/storage/docs/" . strtolower($authenticated_student['matric_no']) . "_report.pdf"; 
-                            ?>
-                            <option value="<?php echo htmlspecialchars($sub['submission_id']); ?>" <?php echo (isset($_POST['submission_id']) && $_POST['submission_id'] == $sub['submission_id']) ? 'selected' : ''; ?>>
-                                <?php echo htmlspecialchars($display_path); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    <?php else: ?>
-                        <option value="" disabled>Authenticate a student first</option>
-                    <?php endif; ?>
-                </select>
+                <label class="block text-xs text-slate-500 mb-2">Upload File Path</label>
+                <input type="file" name="upload_file" class="w-full border border-slate-200 bg-slate-50 rounded-xl p-2.5 text-sm mb-4" required>
 
                 <label class="block text-xs text-slate-500 mb-2">
-                    Enter Text Content
+                    Enter Text Content (maximum 500 words)
                 </label>
                 <textarea
+                    id="tbr_content_area"
                     name="content"
                     rows="8"
                     class="w-full border border-slate-200 rounded-xl p-3 text-sm mb-4"
@@ -266,25 +266,26 @@ if (isset($_POST['reset_content'])) {
                 <button
                     type="submit"
                     name="analyze"
-                    <?php echo !$authenticated_student ? 'disabled' : ''; ?>
-                    class="bg-gradient-to-r from-blue-500 to-cyan-500 text-white px-5 py-3 rounded-xl hover:opacity-90 transition disabled:opacity-50">
+                    class="bg-gradient-to-r from-blue-500 to-cyan-500 text-white px-5 py-3 rounded-xl hover:opacity-90 transition w-full md:w-auto font-medium">
                     Analyze Theme
                 </button>
             </form>
         </div>
 
-        <div class="bg-white rounded-3xl p-6 shadow-xl">
-            <h3 class="text-xs uppercase tracking-widest text-blue-600 font-semibold mb-5">
-                Classification Result
-            </h3>
+        <div class="bg-white rounded-3xl p-6 shadow-xl flex flex-col justify-between">
+            <div>
+                <h3 class="text-xs uppercase tracking-widest text-blue-600 font-semibold mb-5">
+                    Classification Result
+                </h3>
+            </div>
 
-            <div class="text-center mt-5">
-                <div class="w-24 h-24 rounded-full bg-gradient-to-r from-blue-500 to-cyan-500 flex items-center justify-center mx-auto">
-                    <i class="fas fa-tags text-5xl text-white"></i>
+            <div class="text-center my-auto py-6">
+                <div class="w-24 h-24 rounded-full bg-gradient-to-r from-blue-500 to-cyan-500 flex items-center justify-center mx-auto shadow-md">
+                    <i class="fas fa-tags text-4xl text-white"></i>
                 </div>
-                <h1 class="text-2xl font-bold text-slate-800 mt-5">
+                <h1 class="text-2xl font-extrabold text-slate-800 mt-5 tracking-tight">
                     <?php
-                    if (isset($_POST['analyze']) && !empty($themes)) {
+                    if (isset($_POST['analyze']) && !empty($uploaded_file_path) && !empty($text_content)) {
                         echo htmlspecialchars($classification);
                     } else {
                         echo "No Analysis";
@@ -292,6 +293,7 @@ if (isset($_POST['reset_content'])) {
                     ?>
                 </h1>
             </div>
+            <div></div>
         </div>
 
     </div>
@@ -304,46 +306,35 @@ if (isset($_POST['reset_content'])) {
                     Retrieval Details
                 </h3>
                 <div class="text-sm space-y-2 text-slate-700">
-                    <div><strong>Matric No:</strong> <?php echo $authenticated_student ? htmlspecialchars($authenticated_student['matric_no']) : '-'; ?></div>
-                    <div><strong>Full Name:</strong> <?php echo $authenticated_student ? htmlspecialchars($authenticated_student['full_name']) : '-'; ?></div>
-                    <div><strong>Group No:</strong> <?php echo $authenticated_student ? htmlspecialchars($authenticated_student['group_no']) : '-'; ?></div>
-                    <div><strong>File Path:</strong> 
-                        <?php 
-                        if ($selected_submission) {
-                            echo htmlspecialchars(!empty($selected_submission['file_path']) ? $selected_submission['file_path'] : "/storage/docs/" . strtolower($authenticated_student['matric_no']) . "_report.pdf");
-                        } else { echo '-'; }
-                        ?>
-                    </div>
-                    <div><strong>File Type:</strong> 
-                        <?php 
-                        if ($selected_submission) {
-                            $path = !empty($selected_submission['file_path']) ? $selected_submission['file_path'] : ".pdf";
-                            echo htmlspecialchars(strtoupper(pathinfo($path, PATHINFO_EXTENSION)));
-                        } else { echo '-'; }
-                        ?>
-                    </div>
-                    <div><strong>Text Content:</strong> <span class="text-xs text-slate-500 italic"><?php echo $text_content ? htmlspecialchars(substr($text_content, 0, 100)) . '...' : '-'; ?></span></div>
+                    <div><strong>Matric No:</strong> <?php echo htmlspecialchars($authenticated_student['matric_no']); ?></div>
+                    <div><strong>Full Name:</strong> <?php echo htmlspecialchars($authenticated_student['full_name']); ?></div>
+                    <div><strong>Group No:</strong> <?php echo htmlspecialchars($authenticated_student['group_no']); ?></div>
+                    <div><strong>File Name:</strong> <?php echo !empty($input_file_name) ? htmlspecialchars($input_file_name) : '-'; ?></div>
+                    <div><strong>File Path:</strong> <?php echo !empty($uploaded_file_path) ? htmlspecialchars($uploaded_file_path) : '-'; ?></div>
+                    <div><strong>File Type:</strong> <?php echo !empty($uploaded_file_type) ? htmlspecialchars($uploaded_file_type) : '-'; ?></div>
                 </div>
             </div>
 
             <div class="bg-white rounded-3xl p-6 shadow-xl">
-                <h3 class="text-xs uppercase tracking-widest text-blue-600 font-semibold mb-5">
+                <h3 class="text-xs uppercase tracking-widest text-blue-600 font-semibold mb-4">
                     Detected Themes
                 </h3>
-                <?php
-                if (isset($_POST['analyze']) && !empty($themes)) {
-                    foreach ($themes as $theme) {
-                        echo "
-                        <div class='bg-blue-50 p-4 rounded-xl mb-3'>
-                            <h4 class='font-semibold text-slate-800'>
-                                $theme
-                            </h4>
-                        </div>";
-                    }
-                } else {
-                    echo "<p class='text-sm text-slate-400 italic'>No themes detected yet.</p>";
-                }
-                ?>
+                <?php if (isset($_POST['analyze']) && !empty($uploaded_file_path) && !empty($text_content)): ?>
+                    <div class='bg-blue-50/80 p-4 rounded-xl mb-4 border border-blue-100'>
+                        <span class="text-xs uppercase font-bold tracking-wider text-blue-500 block mb-1">Target Category Matches:</span>
+                        <h4 class='font-bold text-slate-950 text-base'>
+                            <?php echo htmlspecialchars($classification); ?>
+                        </h4>
+                    </div>
+                    <div class="mt-2">
+                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-2">Highlighted Source Vector:</span>
+                        <div class="p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm leading-relaxed text-slate-800 font-mono overflow-y-auto max-h-48 whitespace-pre-wrap">
+                            <?php echo $highlighted_text; ?>
+                        </div>
+                    </div>
+                <?php else: ?>
+                    <p class='text-sm text-slate-400 italic'>No themes detected yet.</p>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -353,25 +344,18 @@ if (isset($_POST['reset_content'])) {
                     Theme Statistics
                 </h3>
 
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="bg-blue-50 rounded-2xl p-4">
-                        <p class="text-xs text-slate-500">Words Analysed</p>
-                        <h4 class="font-semibold text-lg">
+                <div class="grid grid-cols-1 gap-4">
+                    <div class="bg-blue-50 rounded-2xl p-4 border border-blue-100/50">
+                        <p class="text-xs text-slate-500 font-medium">Words Analysed</p>
+                        <h4 class="font-bold text-xl text-slate-900 mt-1">
                             <?php echo $words_analysed; ?>
                         </h4>
                     </div>
 
-                    <div class="bg-cyan-50 rounded-2xl p-4">
-                        <p class="text-xs text-slate-500">Themes Found</p>
-                        <h4 class="font-semibold text-lg">
-                            <?php echo $themes_found; ?>
-                        </h4>
-                    </div>
-
-                    <div class="bg-indigo-50 rounded-2xl p-4 col-span-2">
-                        <p class="text-xs text-slate-500">Classification</p>
-                        <h4 class="font-semibold">
-                            <?php echo htmlspecialchars($classification); ?>
+                    <div class="bg-indigo-50 rounded-2xl p-4 border border-indigo-100/50">
+                        <p class="text-xs text-slate-500 font-medium">Classification</p>
+                        <h4 class="font-bold text-slate-900 mt-1 text-base">
+                            <?php echo (isset($_POST['analyze']) && !empty($uploaded_file_path)) ? htmlspecialchars($classification) : 'Keyword-Based'; ?>
                         </h4>
                     </div>
                 </div>
@@ -382,27 +366,29 @@ if (isset($_POST['reset_content'])) {
 
     <div class="mt-5 bg-white rounded-3xl p-6 shadow-xl">
         <form method="post" class="grid grid-cols-2 gap-4">
-            <input type="hidden" name="auth_id_hidden" value="<?php echo $authenticated_student ? htmlspecialchars($authenticated_student['id']) : ''; ?>">
-            
-            <input type="hidden" name="save_submission_id" value="<?php echo $selected_submission ? htmlspecialchars($selected_submission['submission_id']) : ''; ?>">
-            <input type="hidden" name="save_file_path" value="<?php echo $selected_submission ? htmlspecialchars(!empty($selected_submission['file_path']) ? $selected_submission['file_path'] : "/storage/docs/" . strtolower($authenticated_student['matric_no']) . "_report.pdf") : ''; ?>">
-            <input type="hidden" name="save_file_type" value="<?php echo $selected_submission ? htmlspecialchars(strtoupper(pathinfo(!empty($selected_submission['file_path']) ? $selected_submission['file_path'] : ".pdf", PATHINFO_EXTENSION))) : ''; ?>">
+            <input type="hidden" name="save_file_name" value="<?php echo htmlspecialchars($input_file_name); ?>">
+            <input type="hidden" name="save_file_path" value="<?php echo htmlspecialchars($uploaded_file_path); ?>">
+            <input type="hidden" name="save_file_type" value="<?php echo htmlspecialchars($uploaded_file_type); ?>">
             <input type="hidden" name="save_extracted_text" value="<?php echo htmlspecialchars($text_content); ?>">
             <input type="hidden" name="save_classification" value="<?php echo htmlspecialchars($classification); ?>">
             <input type="hidden" name="save_words_analysed" value="<?php echo $words_analysed; ?>">
-            <input type="hidden" name="save_themes_found" value="<?php echo $themes_found; ?>">
 
-            <button type="submit" name="reset_content" class="bg-slate-200 text-slate-700 px-4 py-3 rounded-xl font-medium hover:bg-slate-300 transition">
+            <button type="submit" name="reset_content" class="bg-slate-200 text-slate-700 px-4 py-3 rounded-xl font-semibold hover:bg-slate-300 transition text-sm">
                 Reset Content
             </button>
-            <button type="submit" name="save_content" <?php echo !$selected_submission ? 'disabled' : ''; ?> class="bg-green-600 text-white px-4 py-3 rounded-xl font-medium hover:bg-green-700 transition disabled:opacity-50">
+            
+            <?php 
+            // Assertion Logic validation: block capability if any metric parameters evaluate to empty strings
+            $is_form_valid = (!empty($input_file_name) && !empty($uploaded_file_path) && !empty($uploaded_file_type) && !empty($text_content) && ($classification !== 'Keyword-Based'));
+            ?>
+            <button type="submit" name="save_content" <?php echo !$is_form_valid ? 'disabled' : ''; ?> class="bg-green-600 text-white px-4 py-3 rounded-xl font-semibold hover:bg-green-700 transition disabled:opacity-40 disabled:cursor-not-allowed text-sm shadow-sm">
                 Save Content
             </button>
         </form>
         
         <?php if (!empty($success_msg)): ?>
-            <div class="mt-3 p-2 bg-green-100 text-green-800 rounded-lg text-xs text-center font-medium">
-                <?php echo $success_msg; ?>
+            <div class="mt-4 p-3 bg-green-100 text-green-800 border border-green-200 rounded-xl text-sm text-center font-semibold">
+                ✓ <?php echo $success_msg; ?>
             </div>
         <?php endif; ?>
     </div>
@@ -415,57 +401,50 @@ if (isset($_POST['reset_content'])) {
             <table class="w-full text-left border-collapse text-sm">
                 <thead>
                     <tr class="bg-slate-800 text-white text-xs uppercase tracking-wider">
-                        <th class="p-3 border border-slate-700">Matric No</th>
-                        <th class="p-3 border border-slate-700">Full Name</th>
-                        <th class="p-3 border border-slate-700">Group No</th>
-                        <th class="p-3 border border-slate-700">File Path</th>
-                        <th class="p-3 border border-slate-700">Content File Type</th>
-                        <th class="p-3 border border-slate-700">TBR Theme Category</th>
-                        <th class="p-3 border border-slate-700">Word Analyse</th>
-                        <th class="p-3 border border-slate-700">Themes Found</th>
+                        <th class="p-4 border border-slate-700 font-semibold">Matric No</th>
+                        <th class="p-4 border border-slate-700 font-semibold">Full Name</th>
+                        <th class="p-4 border border-slate-700 font-semibold">Group No</th>
+                        <th class="p-4 border border-slate-700 font-semibold">Content File Name</th>
+                        <th class="p-4 border border-slate-700 font-semibold">Content File Path</th>
+                        <th class="p-4 border border-slate-700 font-semibold">Content File Type</th>
+                        <th class="p-4 border border-slate-700 font-semibold">TBR Theme Category</th>
+                        <th class="p-4 border border-slate-700 font-semibold">Word Analyse</th>
                     </tr>
                 </thead>
                 <tbody class="text-slate-700">
                     <?php
                     if ($conn) {
-                        $history_query = "SELECT s.student_id, s.student_matric_no, s.file_path, mc.content_file_type, mc.tbr_theme_category, mc.word_analyse, mc.theme_found 
+                        // Fully integrated SQL query structure pulling related student criteria alongside multimedia elements
+                        $history_query = "SELECT mc.student_matric_no, st.full_name, st.group_no, mc.content_file_name, mc.content_file_path, mc.content_file_type, mc.tbr_theme_category, mc.word_analyse 
                                           FROM multimedia_content mc 
-                                          JOIN submission s ON mc.submission_id = s.submission_id 
+                                          LEFT JOIN student st ON mc.student_matric_no = st.student_matric_no 
                                           ORDER BY mc.content_id DESC";
                         $history_result = mysqli_query($conn, $history_query);
                         
                         if ($history_result && mysqli_num_rows($history_result) > 0) {
                             while ($row = mysqli_fetch_assoc($history_result)) {
-                                // Match student info from vstu array cache using id or matric_no
-                                $matched_stu = null;
-                                foreach ($students_list as $stu) {
-                                    if (($row['student_id'] && $stu['id'] == $row['student_id']) || ($stu['matric_no'] === $row['student_matric_no'])) {
-                                        $matched_stu = $stu;
-                                        break;
-                                    }
+                                echo "<tr class='hover:bg-slate-50 border-b border-slate-100 transition duration-150'>";
+                                echo "<td class='p-4 border border-slate-100 font-mono text-xs font-bold text-slate-600'>" . htmlspecialchars($row['student_matric_no'] ?? '') . "</td>";
+                                echo "<td class='p-4 border border-slate-100 font-medium text-slate-900'>" . htmlspecialchars($row['full_name'] ?? '-');
+                                echo "<td class='p-4 border border-slate-100'><span class='px-2 py-0.5 bg-slate-100 text-slate-700 text-xs font-bold rounded'>" . htmlspecialchars($row['group_no'] ?? '-') . "</span></td>";
+                                echo "<td class='p-4 border border-slate-100 font-medium text-slate-900'>" . htmlspecialchars($row['content_file_name'] ?? '-') . "</td>";
+                                echo "<td class='p-4 text-xs font-mono text-slate-500'>";
+                                if (!empty($row['content_file_path'])) {
+                                    echo htmlspecialchars($row['content_file_path']) . " ";
+                                    echo "<a href='".htmlspecialchars($row['content_file_path'])."' download class='inline-block ml-2 text-blue-500 hover:underline'><i class='fas fa-download'></i> Download</a>";
+                                } else {
+                                    echo "N/A";
                                 }
-                                
-                                $m_no = $matched_stu ? $matched_stu['matric_no'] : $row['student_matric_no'];
-                                $f_name = $matched_stu ? $matched_stu['full_name'] : '-';
-                                $g_no = $matched_stu ? $matched_stu['group_no'] : '-';
-                                $f_path = !empty($row['file_path']) ? $row['file_path'] : "/storage/docs/" . strtolower($m_no) . "_report.pdf";
-
-                                echo "<tr class='hover:bg-slate-50 border-b border-slate-100'>";
-                                echo "<td class='p-3 border border-slate-100'>" . htmlspecialchars($m_no) . "</td>";
-                                echo "<td class='p-3 border border-slate-100'>" . htmlspecialchars($f_name) . "</td>";
-                                echo "<td class='p-3 border border-slate-100'>" . htmlspecialchars($g_no) . "</td>";
-                                echo "<td class='p-3 border border-slate-100 text-xs text-slate-500'>" . htmlspecialchars($f_path) . "</td>";
-                                echo "<td class='p-3 border border-slate-100'>" . htmlspecialchars($row['content_file_type']) . "</td>";
-                                echo "<td class='p-3 border border-slate-100 font-medium text-slate-900'>" . htmlspecialchars($row['tbr_theme_category']) . "</td>";
-                                echo "<td class='p-3 border border-slate-100'>" . htmlspecialchars($row['word_analyse']) . "</td>";
-                                echo "<td class='p-3 border border-slate-100'>" . htmlspecialchars($row['theme_found']) . "</td>";
+                                echo "<td class='p-4 border border-slate-100 font-bold text-xs text-center text-slate-600'>" . htmlspecialchars($row['content_file_type'] ?? '') . "</td>";
+                                echo "<td class='p-4 border border-slate-100 font-semibold text-blue-600'>" . htmlspecialchars($row['tbr_theme_category'] ?? '') . "</td>";
+                                echo "<td class='p-4 border border-slate-100 font-mono font-medium text-slate-800 text-center'>" . htmlspecialchars($row['word_analyse'] ?? '0') . "</td>";
                                 echo "</tr>";
                             }
                         } else {
-                            echo "<tr><td colspan='8' class='p-4 text-center text-slate-400 italic'>No classification history found.</td></tr>";
+                            echo "<tr><td colspan='7' class='p-5 text-center text-slate-400 italic bg-slate-50/50'>No classification history records identified inside storage layers.</td></tr>";
                         }
                     } else {
-                        echo "<tr><td colspan='8' class='p-4 text-center text-red-400 italic'>Database connection failed.</td></tr>";
+                        echo "<tr><td colspan='7' class='p-5 text-center text-red-500 font-medium italic bg-red-50'>Database platform tracking module connection verification check failed.</td></tr>";
                     }
                     ?>
                 </tbody>
@@ -474,6 +453,23 @@ if (isset($_POST['reset_content'])) {
     </div>
 
 </main>
+
+<script>
+// Client side input protection listener monitoring dynamic textarea limits to enforce a hard maximum cap of 500 words
+document.addEventListener('DOMContentLoaded', function() {
+    const contentArea = document.getElementById('tbr_content_area');
+    if (contentArea) {
+        contentArea.addEventListener('input', function() {
+            const words = this.value.trim().split(/\s+/);
+            if (words.length > 500) {
+                // Parse cleanly back down to structural constraints bounds
+                const truncatedWords = words.slice(0, 500);
+                this.value = truncatedWords.join(" ");
+            }
+        });
+    }
+});
+</script>
 
 </body>
 </html>

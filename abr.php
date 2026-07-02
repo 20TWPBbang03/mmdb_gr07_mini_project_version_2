@@ -7,7 +7,7 @@ if (session_status() === PHP_SESSION_NONE) {
 // Include database connections from db_conn.php
 require_once 'db_conn.php'; 
 
-// Check if connections initialized properly ($conn references gr07, $conn_mmdb references mmdb2026)
+// Check if connections initialized properly
 $db_error = false;
 if (!$conn) {
     $db_error = true;
@@ -18,130 +18,90 @@ $alert_type = "";
 
 // 1. PROCESS ACTIONS & SUBMISSIONS
 if (!$db_error && $_SERVER['REQUEST_METHOD'] === 'POST') {
-    
-    // ACTION: Student Authentication
-    if (isset($_POST['action_auth'])) {
-        $identifier = trim($_POST['identifier'] ?? '');
-        $phone_no = trim($_POST['phone_no'] ?? '');
-        
-        if (empty($identifier) || empty($phone_no)) {
-            $alert_msg = "Please fill in both fields for verification.";
-            $alert_type = "error";
-        } else {
-            // Check if fallback system was activated ($conn_mmdb could be false)
-            $db_target = $conn_mmdb ? $conn_mmdb : $conn;
-            
-            $stmt = $db_target->prepare("SELECT id, matric_no, full_name, phone_no, group_no FROM vstu WHERE (matric_no = ? OR full_name = ?) AND phone_no = ? LIMIT 1");
-            if ($stmt) {
-                $stmt->bind_param("sss", $identifier, $identifier, $phone_no);
-                $stmt->execute();
-                $res = $stmt->get_result();
-                if ($res && $row = $res->fetch_assoc()) {
-                    $_SESSION['authenticated_student'] = $row;
-                    $alert_msg = "Authentication Successful!";
-                    $alert_type = "success";
-                } else {
-                    $alert_msg = "Authentication failed. Information does not match.";
-                    $alert_type = "error";
-                }
-                $stmt->close();
-            } else {
-                $alert_msg = "Error executing authentication query.";
-                $alert_type = "error";
-            }
-        }
-    }
 
     // ACTION: Submission Retrieval
     if (isset($_POST['action_retrieve'])) {
-        if (!isset($_SESSION['authenticated_student'])) {
-            $alert_msg = "Please authenticate first using the Student Authentication card.";
+        $assignment_id = $_POST['assignment_id'] ?? '';
+        $uploaded_file = $_FILES['submission_file'] ?? null;
+
+        if (empty($assignment_id) || !$uploaded_file || $uploaded_file['error'] !== UPLOAD_ERR_OK) {
+            $alert_msg = "Both assignment selection and file upload are required.";
             $alert_type = "error";
         } else {
-            $assignment_id = $_POST['assignment_id'] ?? '';
-            $uploaded_file = $_FILES['submission_file'] ?? null;
+            $stmt = $conn->prepare("SELECT assignment_id, title, due_date, max_file_size_mb FROM assignment WHERE assignment_id = ? AND assignment_status = 'Available' LIMIT 1");
+            if ($stmt) {
+                $stmt->bind_param("i", $assignment_id);
+                $stmt->execute();
+                $asg = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+            }
 
-            if (empty($assignment_id) || !$uploaded_file || $uploaded_file['error'] !== UPLOAD_ERR_OK) {
-                $alert_msg = "Both assignment selection and file upload are required.";
-                $alert_type = "error";
+            if (!empty($asg)) {
+                $now = new DateTime();
+                $due = new DateTime($asg['due_date']);
+                
+                // Compare submission status
+                if ($now > $due) {
+                    $status = 'Late';
+                    $diff = $due->diff($now);
+                    $analysis_text = "Submitted " . $diff->days . " Days and " . $diff->h . " Hours late";
+                } else {
+                    $status = 'Early';
+                    $diff = $now->diff($due);
+                    $analysis_text = "Submitted " . $diff->days . " Days and " . $diff->h . " Hours early";
+                }
+
+                // Compute file validations in MB unit
+                $file_size_bytes = $uploaded_file['size'];
+                $file_size_mb = $file_size_bytes / (1024 * 1024);
+                $validation = ($file_size_mb > $asg['max_file_size_mb']) ? 'Oversized' : 'Valid';
+
+                // Save the file persistently
+                $upload_dir = 'uploads/';
+                if (!is_dir($upload_dir)) {
+                    mkdir($upload_dir, 0777, true);
+                }
+                $file_ext = pathinfo($uploaded_file['name'], PATHINFO_EXTENSION);
+                $saved_path = $upload_dir . $_SESSION['student_matric_no'] . '_' . $assignment_id . '_' . time() . '.' . $file_ext;
+
+                if (move_uploaded_file($uploaded_file['tmp_name'], $saved_path)) {
+                    $_SESSION['retrieved_submission'] = [
+                        'assignment_id'    => $asg['assignment_id'],
+                        'title'            => $asg['title'],
+                        'file_path'        => $saved_path,
+                        'file_size_mb'     => $file_size_mb,
+                        'max_file_size_mb' => $asg['max_file_size_mb'],
+                        'sub_date_db'      => $now->format('Y-m-d H:i:s'),
+                        'sub_date_fmt'     => $now->format('d F Y h:i A'),
+                        'due_date_fmt'     => $due->format('d F Y h:i A'),
+                        'status'           => $status,
+                        'validation'       => $validation,
+                        'analysis_text'    => $analysis_text
+                    ];
+                    $alert_msg = "Submission successfully retrieved and analyzed.";
+                    $alert_type = "success";
+                } else {
+                    $alert_msg = "Failed to store the uploaded file.";
+                    $alert_type = "error";
+                }
             } else {
-                $stmt = $conn->prepare("SELECT assignment_id, title, due_date, max_file_size FROM assignment WHERE assignment_id = ? LIMIT 1");
-                if ($stmt) {
-                    $stmt->bind_param("i", $assignment_id);
-                    $stmt->execute();
-                    $asg = $stmt->get_result()->fetch_assoc();
-                    $stmt->close();
-                }
-
-                if (!empty($asg)) {
-                    $now = new DateTime();
-                    $due = new DateTime($asg['due_date']);
-                    
-                    // Compare submission status
-                    if ($now < $due) {
-                        $status = 'Early';
-                        $diff = $now->diff($due);
-                        $analysis_text = "Submitted " . $diff->days . " Days and " . $diff->h . " Hours early";
-                    } elseif ($now > $due) {
-                        $status = 'Late';
-                        $diff = $due->diff($now);
-                        $analysis_text = "Submitted " . $diff->days . " Days and " . $diff->h . " Hours late";
-                    } else {
-                        $status = 'On Time';
-                        $analysis_text = "Submitted on time";
-                    }
-
-                    // Compute file validations
-                    $file_size = $uploaded_file['size'];
-                    $validation = ($file_size > $asg['max_file_size']) ? 'Oversized' : 'Fit on Size';
-
-                    // Save the file temporarily or persistently
-                    $upload_dir = 'uploads/';
-                    if (!is_dir($upload_dir)) {
-                        mkdir($upload_dir, 0777, true);
-                    }
-                    $file_ext = pathinfo($uploaded_file['name'], PATHINFO_EXTENSION);
-                    $saved_path = $upload_dir . $_SESSION['authenticated_student']['matric_no'] . '_' . $assignment_id . '_' . time() . '.' . $file_ext;
-
-                    if (move_uploaded_file($uploaded_file['tmp_name'], $saved_path)) {
-                        $_SESSION['retrieved_submission'] = [
-                            'assignment_id'   => $asg['assignment_id'],
-                            'title'           => $asg['title'],
-                            'file_path'       => $saved_path,
-                            'file_size'       => $file_size,
-                            'sub_date_db'     => $now->format('Y-m-d H:i:s'),
-                            'sub_date_fmt'    => $now->format('d F Y h:i A'),
-                            'due_date_fmt'    => $due->format('d F Y h:i A'),
-                            'status'          => $status,
-                            'validation'      => $validation,
-                            'analysis_text'   => $analysis_text
-                        ];
-                        $alert_msg = "Submission successfully retrieved and analyzed.";
-                        $alert_type = "success";
-                    } else {
-                        $alert_msg = "Failed to store the uploaded file.";
-                        $alert_type = "error";
-                    }
-                }
+                $alert_msg = "Selected assignment is no longer available.";
+                $alert_type = "error";
             }
         }
     }
 
     // ACTION: Save Submission
     if (isset($_POST['action_save'])) {
-        if (!isset($_SESSION['authenticated_student']) || !isset($_SESSION['retrieved_submission'])) {
+        if (!isset($_SESSION['retrieved_submission'])) {
             $alert_msg = "No retrieved submission data available to save.";
             $alert_type = "error";
         } else {
-            $stu = $_SESSION['authenticated_student'];
             $sub = $_SESSION['retrieved_submission'];
 
-            // Match structure alignment with target enum criteria ('Oversized' or 'Within Range')
-            $db_validation = ($sub['validation'] === 'Oversized') ? 'Oversized' : 'Within Range';
-
-            $stmt = $conn->prepare("INSERT INTO submission (student_id, student_matric_no, assignment_id, submission_date, file_path, file_size, file_validation, submission_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt = $conn->prepare("INSERT INTO submission (student_matric_no, assignment_id, submission_date, file_path, file_size_mb, file_validation, submission_status) VALUES (?, ?, ?, ?, ?, ?, ?)");
             if ($stmt) {
-                $stmt->bind_param("isisisss", $stu['id'], $stu['matric_no'], $sub['assignment_id'], $sub['sub_date_db'], $sub['file_path'], $sub['file_size'], $db_validation, $sub['status']);
+                $stmt->bind_param("sisssss", $_SESSION['student_matric_no'], $sub['assignment_id'], $sub['sub_date_db'], $sub['file_path'], $sub['file_size_mb'], $sub['validation'], $sub['status']);
                 if ($stmt->execute()) {
                     $alert_msg = "Submission successfully saved into database!";
                     $alert_type = "success";
@@ -157,7 +117,6 @@ if (!$db_error && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // ACTION: Reset Submission Details
     if (isset($_POST['action_reset'])) {
-        unset($_SESSION['authenticated_student']);
         unset($_SESSION['retrieved_submission']);
         header("Location: abr.php");
         exit;
@@ -193,27 +152,6 @@ include 'menu.php';
         </div>
     <?php endif; ?>
 
-    <div class="mb-6 bg-white/80 backdrop-blur-lg border border-white/50 rounded-3xl p-6 shadow-xl shadow-blue-100">
-        <h3 class="text-xs uppercase tracking-widest text-blue-600 font-semibold mb-5">
-            Student Authentication
-        </h3>
-        <form action="abr.php" method="POST" class="grid grid-cols-3 gap-4 items-end">
-            <div>
-                <label class="block text-xs text-slate-500 mb-2">Matric No or Full Name</label>
-                <input type="text" name="identifier" value="<?php echo htmlspecialchars($_SESSION['authenticated_student']['matric_no'] ?? $_SESSION['authenticated_student']['full_name'] ?? ''); ?>" class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700" placeholder="Enter Matric No or Full Name" <?php echo isset($_SESSION['authenticated_student']) ? 'disabled' : ''; ?>>
-            </div>
-            <div>
-                <label class="block text-xs text-slate-500 mb-2">Phone Number</label>
-                <input type="text" name="phone_no" value="<?php echo htmlspecialchars($_SESSION['authenticated_student']['phone_no'] ?? ''); ?>" class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700" placeholder="Enter Phone No" <?php echo isset($_SESSION['authenticated_student']) ? 'disabled' : ''; ?>>
-            </div>
-            <div>
-                <button type="submit" name="action_auth" class="w-full bg-gradient-to-r from-slate-900 to-blue-900 hover:from-slate-800 hover:to-blue-800 text-white text-sm font-medium px-5 py-3 rounded-xl transition duration-200 disabled:opacity-50" <?php echo isset($_SESSION['authenticated_student']) ? 'disabled' : ''; ?>>
-                    Proceed Submission
-                </button>
-            </div>
-        </form>
-    </div>
-
     <div class="grid grid-cols-2 gap-5">
 
         <div class="bg-white/80 backdrop-blur-lg border border-white/50 rounded-3xl p-6 shadow-xl shadow-blue-100">
@@ -222,11 +160,11 @@ include 'menu.php';
             </h3>
             <form action="abr.php" method="POST" enctype="multipart/form-data">
                 <label class="block text-xs text-slate-500 mb-2">Assignment Title</label>
-                <select name="assignment_id" class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700 mb-4">
+                <select name="assignment_id" required class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700 mb-4">
                     <option value="">Select Assignment</option>
                     <?php
                     if (!$db_error) {
-                        $asg_rows = $conn->query("SELECT assignment_id, title FROM assignment");
+                        $asg_rows = $conn->query("SELECT assignment_id, title FROM assignment WHERE assignment_status = 'Available'");
                         if ($asg_rows) {
                             while ($row = $asg_rows->fetch_assoc()) {
                                 $selected = (isset($_SESSION['retrieved_submission']['assignment_id']) && $_SESSION['retrieved_submission']['assignment_id'] == $row['assignment_id']) ? 'selected' : '';
@@ -238,7 +176,7 @@ include 'menu.php';
                 </select>
 
                 <label class="block text-xs text-slate-500 mb-2">Upload Required File</label>
-                <input type="file" name="submission_file" class="w-full bg-white border border-slate-200 rounded-xl p-2 text-sm text-slate-700 mb-4">
+                <input type="file" name="submission_file" required class="w-full bg-white border border-slate-200 rounded-xl p-2 text-sm text-slate-700 mb-4">
 
                 <button type="submit" name="action_retrieve" class="mt-2 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white text-sm font-medium px-5 py-3 rounded-xl transition duration-200 shadow-md">
                     Retrieve Submission
@@ -261,7 +199,7 @@ include 'menu.php';
                     $theme_gradient = "from-red-400 to-orange-500";
                     $text_color = "text-red-600";
                     $icon_class = "fa-triangle-exclamation";
-                } elseif ($status_check === 'Early' || $status_check === 'On Time') {
+                } elseif ($status_check === 'Early') {
                     $theme_gradient = "from-emerald-400 to-teal-500";
                     $text_color = "text-emerald-600";
                     $icon_class = "fa-circle-check";
@@ -297,31 +235,19 @@ include 'menu.php';
             <div class="space-y-4">
                 <div class="bg-slate-50 p-4 rounded-xl">
                     <p class="text-xs text-slate-500">Student Name</p>
-                    <h4 class="font-semibold"><?php echo htmlspecialchars($_SESSION['authenticated_student']['full_name'] ?? 'N/A'); ?></h4>
+                    <h4 class="font-semibold"><?php echo htmlspecialchars($_SESSION['full_name'] ?? 'N/A'); ?></h4>
                 </div>
                 <div class="bg-slate-50 p-4 rounded-xl">
                     <p class="text-xs text-slate-500">Matric No</p>
-                    <h4 class="font-semibold"><?php echo htmlspecialchars($_SESSION['authenticated_student']['matric_no'] ?? 'N/A'); ?></h4>
+                    <h4 class="font-semibold"><?php echo htmlspecialchars($_SESSION['student_matric_no'] ?? 'N/A'); ?></h4>
                 </div>
                 <div class="bg-slate-50 p-4 rounded-xl">
                     <p class="text-xs text-slate-500">Group No</p>
-                    <h4 class="font-semibold"><?php echo htmlspecialchars($_SESSION['authenticated_student']['group_no'] ?? 'N/A'); ?></h4>
+                    <h4 class="font-semibold"><?php echo htmlspecialchars($_SESSION['group_no'] ?? 'N/A'); ?></h4>
                 </div>
                 <div class="bg-slate-50 p-4 rounded-xl">
                     <p class="text-xs text-slate-500">Assignment Title</p>
                     <h4 class="font-semibold"><?php echo htmlspecialchars($_SESSION['retrieved_submission']['title'] ?? 'N/A'); ?></h4>
-                </div>
-                <div class="bg-slate-50 p-4 rounded-xl">
-                    <p class="text-xs text-slate-500">File Size</p>
-                    <h4 class="font-semibold">
-                        <?php 
-                        if (isset($_SESSION['retrieved_submission']['file_size'])) {
-                            echo number_format($_SESSION['retrieved_submission']['file_size'] / (1024 * 1024), 2) . ' MB';
-                        } else {
-                            echo 'N/A';
-                        }
-                        ?>
-                    </h4>
                 </div>
             </div>
         </div>
@@ -331,6 +257,18 @@ include 'menu.php';
                 Metadata Analysis
             </h3>
             <div class="grid grid-cols-2 gap-4">
+                <div class="bg-slate-50 rounded-2xl p-4">
+                    <p class="text-xs text-slate-500">Assignment Max File Size</p>
+                    <h4 class="text-sm font-semibold text-slate-800 mt-1">
+                        <?php echo isset($_SESSION['retrieved_submission']['max_file_size_mb']) ? number_format($_SESSION['retrieved_submission']['max_file_size_mb'], 4) . ' MB' : 'N/A'; ?>
+                    </h4>
+                </div>
+                <div class="bg-slate-50 rounded-2xl p-4">
+                    <p class="text-xs text-slate-500">File Size Uploaded</p>
+                    <h4 class="text-sm font-semibold text-slate-800 mt-1">
+                        <?php echo isset($_SESSION['retrieved_submission']['file_size_mb']) ? number_format($_SESSION['retrieved_submission']['file_size_mb'], 4) . ' MB' : 'N/A'; ?>
+                    </h4>
+                </div>
                 <div class="bg-blue-50 rounded-2xl p-4">
                     <p class="text-xs text-slate-500">Submission Date</p>
                     <h4 class="text-sm font-semibold text-slate-800 mt-1">
@@ -345,7 +283,7 @@ include 'menu.php';
                 </div>
                 <div class="bg-indigo-50 rounded-2xl p-4">
                     <p class="text-xs text-slate-500">Status</p>
-                    <h4 class="text-sm font-semibold mt-1 <?php echo ($status_check === 'Late') ? 'text-red-600' : 'text-emerald-600'; ?>">
+                    <h4 class="text-sm font-semibold mt-1 <?php echo ($status_check === 'Late') ? 'text-red-600' : ($status_check === 'Early' ? 'text-emerald-600' : 'text-slate-800'); ?>">
                         <?php echo htmlspecialchars($_SESSION['retrieved_submission']['status'] ?? 'N/A'); ?>
                     </h4>
                 </div>
@@ -353,7 +291,7 @@ include 'menu.php';
                     <p class="text-xs text-slate-500">File Validation</p>
                     <?php
                     $val_check = $_SESSION['retrieved_submission']['validation'] ?? 'N/A';
-                    $val_color = ($val_check === 'Oversized') ? 'text-orange-500' : (($val_check === 'Fit on Size') ? 'text-emerald-600' : 'text-slate-800');
+                    $val_color = ($val_check === 'Oversized') ? 'text-orange-500' : (($val_check === 'Valid') ? 'text-emerald-600' : 'text-slate-800');
                     ?>
                     <h4 class="text-sm font-semibold mt-1 <?php echo $val_color; ?>">
                         <?php echo htmlspecialchars($val_check); ?>
@@ -368,7 +306,7 @@ include 'menu.php';
             <button type="submit" name="action_reset" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-medium px-5 py-3 rounded-xl transition duration-200">
                 Reset Submission
             </button>
-            <button type="submit" name="action_save" class="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white text-sm font-medium px-6 py-3 rounded-xl transition duration-200 shadow-md">
+            <button type="submit" name="action_save" <?php echo !isset($_SESSION['retrieved_submission']) ? 'disabled' : ''; ?> class="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white text-sm font-medium px-6 py-3 rounded-xl transition duration-200 shadow-md disabled:opacity-50">
                 Save Submission
             </button>
         </form>
@@ -395,39 +333,28 @@ include 'menu.php';
                 <tbody class="divide-y divide-slate-100">
                     <?php
                     if (!$db_error) {
-                        // Dynamic cross-database relational query matching fallback availability
-                        // Safely handle cases where the remote server vstu view is unavailable locally
-                        if ($conn_mmdb) {
-                            $db_target = "mmdb2026.vstu";
-                        } elseif (isset($success2) && $success2) {
-                            $db_target = "vstu";
-                        } else {
-                            // If remote server connection failed, replace vstu with an empty subquery structure
-                            $db_target = "(SELECT NULL AS matric_no, NULL AS full_name, NULL AS group_no WHERE 1=0)";
-                        }
-                        
                         $history_query = "
                             SELECT 
                                 s.student_matric_no, 
-                                v.full_name, 
-                                v.group_no, 
-                                s.file_path, 
+                                s.full_name, 
+                                s.group_no, 
+                                su.file_path, 
                                 a.due_date, 
-                                s.submission_date, 
-                                s.file_validation, 
-                                s.submission_status 
-                            FROM submission s
-                            JOIN assignment a ON s.assignment_id = a.assignment_id
-                            LEFT JOIN $db_target v ON s.student_matric_no = v.matric_no
-                            ORDER BY s.submission_date DESC";
+                                su.submission_date, 
+                                su.file_validation, 
+                                su.submission_status 
+                            FROM submission su
+                            JOIN student s ON su.student_matric_no = s.student_matric_no
+                            JOIN assignment a ON su.assignment_id = a.assignment_id
+                            ORDER BY su.submission_date DESC";
                         
                         $history_rows = $conn->query($history_query);
                         if ($history_rows && $history_rows->num_rows > 0) {
                             while ($row = $history_rows->fetch_assoc()) {
                                 echo "<tr class='hover:bg-slate-50/50 transition duration-150'>";
                                 echo "<td class='p-4 font-medium text-slate-900'>".htmlspecialchars($row['student_matric_no'])."</td>";
-                                echo "<td class='p-4'>".htmlspecialchars($row['full_name'] ?? 'N/A')."</td>";
-                                echo "<td class='p-4'>".htmlspecialchars($row['group_no'] ?? 'N/A')."</td>";
+                                echo "<td class='p-4'>".htmlspecialchars($row['full_name'])."</td>";
+                                echo "<td class='p-4'>".htmlspecialchars($row['group_no'])."</td>";
                                 echo "<td class='p-4 text-xs font-mono text-slate-500'>";
                                 if (!empty($row['file_path'])) {
                                     echo htmlspecialchars($row['file_path']) . " ";
@@ -439,7 +366,7 @@ include 'menu.php';
                                 echo "<td class='p-4 text-slate-600'>".htmlspecialchars(date('d M Y h:i A', strtotime($row['due_date'])))."</td>";
                                 echo "<td class='p-4 text-slate-600'>".htmlspecialchars(date('d M Y h:i A', strtotime($row['submission_date'])))."</td>";
                                 
-                                $v_str = ($row['file_validation'] === 'Within Range') ? 'Fit on Size' : htmlspecialchars($row['file_validation']);
+                                $v_str = htmlspecialchars($row['file_validation']);
                                 $v_badge = ($v_str === 'Oversized') ? 'bg-orange-50 text-orange-600' : 'bg-emerald-50 text-emerald-600';
                                 echo "<td class='p-4'><span class='px-2.5 py-1 text-xs font-medium rounded-full {$v_badge}'>{$v_str}</span></td>";
                                 

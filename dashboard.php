@@ -35,11 +35,31 @@ include('menu.php');
 
     
         
-        <div class="grid grid-cols-3 gap-5">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
 
-            <a href="abr.php">
+            <a href="assignment_management.php<?php echo $url_suffix; ?>">
 
-                <div class="bg-white rounded-3xl p-6 shadow-xl hover:scale-105 transition duration-300 cursor-pointer">
+                <div class="bg-white rounded-3xl p-6 shadow-xl hover:scale-105 transition duration-300 cursor-pointer h-full">
+
+                    <div class="text-indigo-500 text-4xl mb-4">
+                        <i class="fas fa-tasks"></i>
+                    </div>
+
+                    <h3 class="font-bold text-lg">
+                        Assignment Management
+                    </h3>
+
+                    <p class="text-sm text-slate-500 mt-2">
+                        Control Settings & Bounds
+                    </p>
+
+                </div>
+
+            </a>
+
+            <a href="abr.php<?php echo $url_suffix; ?>">
+
+                <div class="bg-white rounded-3xl p-6 shadow-xl hover:scale-105 transition duration-300 cursor-pointer h-full">
 
                     <div class="text-blue-500 text-4xl mb-4">
                         <i class="fas fa-file-circle-check"></i>
@@ -57,9 +77,9 @@ include('menu.php');
 
             </a>
 
-            <a href="tbr.php">
+            <a href="tbr.php<?php echo $url_suffix; ?>">
 
-                <div class="bg-white rounded-3xl p-6 shadow-xl hover:scale-105 transition duration-300 cursor-pointer">
+                <div class="bg-white rounded-3xl p-6 shadow-xl hover:scale-105 transition duration-300 cursor-pointer h-full">
 
                     <div class="text-cyan-500 text-4xl mb-4">
                         <i class="fas fa-file-lines"></i>
@@ -77,9 +97,9 @@ include('menu.php');
 
             </a>
 
-            <a href="cbr2.php">
+            <a href="cbr.php<?php echo $url_suffix; ?>">
 
-                <div class="bg-white rounded-3xl p-6 shadow-xl hover:scale-105 transition duration-300 cursor-pointer">
+                <div class="bg-white rounded-3xl p-6 shadow-xl hover:scale-105 transition duration-300 cursor-pointer h-full">
 
                     <div class="text-yellow-500 text-4xl mb-4">
                         <i class="fas fa-face-smile"></i>
@@ -100,4 +120,4 @@ include('menu.php');
         </div>
 
     
-</div> </main> </body> </html> ```
+</div> </main> </body> </html>
