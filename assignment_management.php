@@ -34,8 +34,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Treat directly as a float value for decimal(6,4) column
             $max_size_mb = floatval($max_size);
             
-            // Adjust typo field mapping based on your active .sql dump schema: enum('Available','Cloased')
-            $schema_status = ($status === 'Closed') ? 'Cloased' : 'Available';
+            // Adjust typo field mapping based on your active .sql dump schema: enum('Available','Closed')
+            $schema_status = ($status === 'Closed') ? 'Closed' : 'Available';
 
             $insert_stmt = $conn->prepare("INSERT INTO assignment (title, due_date, max_file_size_mb, assignment_status) VALUES (?, ?, ?, ?)");
             // Changed parameter binding to 'd' for decimal float value
@@ -62,7 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         if ($assignment_id > 0 && !empty($title) || !empty($due_date) || !empty($max_size)) {
             $max_size_mb = floatval($max_size);
-            $schema_status = ($status === 'Closed') ? 'Cloased' : 'Available';
+            $schema_status = ($status === 'Closed') ? 'Closed' : 'Available';
 
             $update_stmt = $conn->prepare("UPDATE assignment SET title = ?, due_date = ?, max_file_size_mb = ?, assignment_status = ? WHERE assignment_id = ?");
             // Fixed spaced bindings string and updated parameter type to 'd' for decimal
@@ -97,7 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $form_due_date = date('Y-m-d\TH:i', strtotime($row['due_date']));
             // Removed division math since column is natively structured in MBs already
             $form_max_size = number_format($row['max_file_size_mb'], 4, '.', '');
-            $form_status = ($row['assignment_status'] === 'Cloased') ? 'Closed' : 'Available';
+            $form_status = ($row['assignment_status'] === 'Closed') ? 'Closed' : 'Available';
         }
         $fetch_stmt->close();
     }
@@ -204,7 +204,7 @@ include 'menu.php';
                 while ($row = $res_list->fetch_assoc()) {
                     $mb_size = number_format($row['max_file_size_mb'], 4, '.', '');
                     // Correct alignment matching stored database ENUM value spellings
-                    $display_status = ($row['assignment_status'] === 'Cloased') ? 'Closed' : 'Available';
+                    $display_status = ($row['assignment_status'] === 'Closed') ? 'Closed' : 'Available';
                     $badge_class = ($display_status === 'Available') ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-rose-50 text-rose-700 border-rose-100';
                     ?>
                     
