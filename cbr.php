@@ -530,6 +530,9 @@ document.addEventListener("DOMContentLoaded", async () => {
             console.error("Network synchronization error:", error);
             // Prevents false warning triggers if camera was simply stopping track execution
             apiStatus.innerText = "Analysis saved. Camera auto-deactivated.";
+            setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
         });
     });
 });

@@ -22,7 +22,7 @@ $group_options = ['GK01','GK02','GR01','GR02','GR03','GR04','GR05','GR06','GR07'
         
         <div class="w-full md:w-1/3 bg-slate-900 text-white p-10 flex flex-col justify-between bg-gradient-to-b from-slate-900 to-slate-950">
             <div>
-                <h1 class="text-xl font-bold tracking-wide">Multimedia Retrieval</h1>
+                <h1 class="text-xl font-bold tracking-wide">Multimedia Retrieval GR07</h1>
                 <p class="text-slate-400 text-xs mt-1">Identity Profile Provisioning</p>
             </div>
             
