@@ -86,11 +86,7 @@ $group_options = ['GK01','GK02','GR01','GR02','GR03','GR04','GR05','GR06','GR07'
                         Login
                     </button>
                     
-                    <div class="text-center">
-                        <a href="register.php" class="inline-block text-xs text-blue-600 hover:text-blue-800 font-semibold transition duration-150">
-                            Create a new student profile account <i class="fas fa-arrow-right ml-1"></i>
-                        </a>
-                    </div>
+                    
                 </div>
             </form>
         </div>
