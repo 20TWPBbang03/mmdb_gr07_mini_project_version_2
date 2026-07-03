@@ -101,6 +101,6 @@ $conn->close();
 
 <a href="../../dashboard.php?group=<?php echo urlencode($group); ?>" class="btn-back">BACK TO DASHBOARD</a>
 
-<a href="login.php?group=<?php echo urlencode($group); ?>" class="btn-gr07">SYSTEM INTERFACE GR07</a>
+<a href="mmdb_project/login.php?group=<?php echo urlencode($group); ?>" class="btn-gr07">SYSTEM INTERFACE GR07</a>
 </body>
 </html>
